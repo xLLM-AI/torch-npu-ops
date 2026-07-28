@@ -28,6 +28,7 @@
 
 #include "kernel_registry.h"
 #include "test/test_utils.h"
+#include "tests/npu_test_environment.h"
 #include "torch_api/triton_ops_api.h"
 #include "torch_npu/csrc/core/npu/NPUCachingAllocator.h"
 
@@ -262,6 +263,7 @@ TEST_F(TritonSplitRmsnormRopeTest, RandomInputMatchesCpuReference) {
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
+  xllm::testing::init_npu_test_runtime();
   return RUN_ALL_TESTS();
 }
 

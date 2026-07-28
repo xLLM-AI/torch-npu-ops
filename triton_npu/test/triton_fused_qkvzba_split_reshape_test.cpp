@@ -31,6 +31,7 @@
 
 #include "kernel_registry.h"
 #include "test/test_utils.h"
+#include "tests/npu_test_environment.h"
 #include "torch_api/triton_ops_api.h"
 #include "torch_npu/csrc/core/npu/NPUCachingAllocator.h"
 
@@ -283,6 +284,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
+  xllm::testing::init_npu_test_runtime();
 
   bool npu_available = false;
   std::string device_str =
