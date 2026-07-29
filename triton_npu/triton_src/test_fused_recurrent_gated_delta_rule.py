@@ -437,6 +437,7 @@ def fused_recurrent_gated_delta_rule_spec_fwd(
         IS_BETA_HEADWISE=beta.ndim == v.ndim,
         USE_QK_L2NORM_IN_KERNEL=use_qk_l2norm_in_kernel,
         IS_KDA=False,
+        multibuffer=False,
     )
     return o.squeeze(0), final_state
 
