@@ -152,11 +152,25 @@ class OperationBase {
 
     void* ffts_addr = nullptr;
     uint32_t ffts_len = 0;
+    bool has_hardware_sync_arg = true;
     auto rt_ret =
         rtGetC2cCtrlAddr(reinterpret_cast<uint64_t*>(&ffts_addr), &ffts_len);
     if (rt_ret != RT_ERROR_NONE) {
-      LOG(ERROR) << "rtGetC2cCtrlAddr failed: " << rt_ret;
-      return rt_ret;
+      const auto acl_sync_ret = aclrtGetHardwareSyncAddr(&ffts_addr);
+      if (acl_sync_ret == ACL_ERROR_RT_FEATURE_NOT_SUPPORT) {
+        static std::once_flag warning_once;
+        std::call_once(warning_once, [rt_ret]() {
+          LOG(WARNING) << "Hardware sync address is unavailable; continuing "
+                       << "without it (rtGetC2cCtrlAddr returned " << rt_ret
+                       << ")";
+        });
+        ffts_addr = nullptr;
+        has_hardware_sync_arg = false;
+      } else if (acl_sync_ret != ACL_ERROR_NONE) {
+        LOG(ERROR) << "Failed to get hardware sync address: rt=" << rt_ret
+                   << ", acl=" << acl_sync_ret;
+        return static_cast<rtError_t>(acl_sync_ret);
+      }
     }
 
     void* workspace = nullptr;
@@ -167,7 +181,9 @@ class OperationBase {
     }
 
     ArgsBuilder ab;
-    ab.add_aligned<void*>(ffts_addr, 8);
+    if (has_hardware_sync_arg) {
+      ab.add_aligned<void*>(ffts_addr, 8);
+    }
     ab.add_aligned<void*>(lock, 8);
     ab.add_aligned<void*>(workspace, 8);
     build_args(ab);
