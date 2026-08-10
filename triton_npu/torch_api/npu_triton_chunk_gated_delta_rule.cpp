@@ -307,42 +307,42 @@ torch::Tensor npu_solve_tril(
   const int64_t B = A.size(0);
   const int64_t T = A.size(1);
   const int64_t H = A.size(2);
-  const int64_t large_block_t = 608 * 2;
+  const int64_t solve_block_t = 16;
 
   auto A_contig = A.contiguous();
   auto cu_prepared = cu_seqlens.has_value()
                          ? std::optional<torch::Tensor>(
                                cu_seqlens.value().to(torch::kInt32).contiguous())
                          : std::nullopt;
-  auto large_block_indices =
-      prepare_chunk_indices_like_python(cu_prepared, large_block_t);
-  if (large_block_indices.has_value()) {
-    large_block_indices =
-        large_block_indices.value().to(torch::kInt32).contiguous();
+  auto solve_block_indices =
+      prepare_chunk_indices_like_python(cu_prepared, solve_block_t);
+  if (solve_block_indices.has_value()) {
+    solve_block_indices =
+        solve_block_indices.value().to(torch::kInt32).contiguous();
   }
-  const int64_t large_nt = cu_prepared.has_value()
-                               ? large_block_indices.value().size(0)
-                               : cdiv(T, large_block_t);
+  const int64_t solve_nt = cu_prepared.has_value()
+                               ? solve_block_indices.value().size(0)
+                               : cdiv(T, solve_block_t);
   auto Ad = torch::empty({B, T, H, 16},
                          torch::TensorOptions().dtype(torch::kFloat32).device(A.device()));
 
   auto npu_stream = c10_npu::getCurrentNPUStream(A_contig.device().index());
   rtStream_t stream = static_cast<rtStream_t>(npu_stream.stream());
   void* cu_ptr = cu_prepared.has_value() ? cu_prepared.value().data_ptr() : nullptr;
-  void* large_indices_ptr = large_block_indices.has_value()
-                                ? large_block_indices.value().data_ptr()
+  void* solve_indices_ptr = solve_block_indices.has_value()
+                                ? solve_block_indices.value().data_ptr()
                                 : nullptr;
 
   auto& solve_op = OperationFactory::instance().solve_tril_16x16();
   auto ret = solve_op.execute(stream,
-                              static_cast<int32_t>(large_nt),
+                              static_cast<int32_t>(solve_nt),
                               static_cast<int32_t>(B * H),
                               1,
                               [&](ArgsBuilder& ab) {
                                 ab.constructArgs(A_contig.data_ptr(),
                                                  Ad.data_ptr(),
                                                  cu_ptr,
-                                                 large_indices_ptr,
+                                                 solve_indices_ptr,
                                                  static_cast<int32_t>(T),
                                                  static_cast<int32_t>(H));
                               });
@@ -385,8 +385,8 @@ torch::Tensor npu_solve_tril(
   if (cu_prepared.has_value()) {
     record_tensor_if_needed(cu_prepared.value(), npu_stream);
   }
-  if (large_block_indices.has_value()) {
-    record_tensor_if_needed(large_block_indices.value(), npu_stream);
+  if (solve_block_indices.has_value()) {
+    record_tensor_if_needed(solve_block_indices.value(), npu_stream);
   }
   if (merge_indices.has_value()) {
     record_tensor_if_needed(merge_indices.value(), npu_stream);
@@ -500,25 +500,30 @@ torch::Tensor npu_chunk_fwd_o(
                          ? std::optional<torch::Tensor>(
                                cu_seqlens.value().to(torch::kInt32).contiguous())
                          : std::nullopt;
-  auto chunk_offsets =
-      prepare_chunk_offsets_like_python(cu_prepared, std::nullopt, chunk_size);
-  if (chunk_offsets.has_value()) {
-    chunk_offsets = chunk_offsets.value().to(torch::kInt64).contiguous();
+  // chunk_fwd_kernel_o indexes varlen work by a dense [sequence, chunk] table.
+  // Keep this metadata in the same int32 ABI form as cu_seqlens; the older
+  // prefix-offset vector is not interchangeable and can make the kernel read
+  // past the metadata buffer on A5.
+  auto chunk_indices = prepare_chunk_indices_like_python(cu_prepared, chunk_size);
+  if (chunk_indices.has_value()) {
+    chunk_indices = chunk_indices.value().to(torch::kInt32).contiguous();
   }
-  const int64_t N = cu_prepared.has_value() ? cu_prepared.value().numel() - 1 : B;
+  const int64_t total_chunks =
+      cu_prepared.has_value() ? chunk_indices.value().size(0)
+                              : B * cdiv(T, chunk_size);
   auto out = torch::empty_like(v_contig);
 
   auto npu_stream = c10_npu::getCurrentNPUStream(q_contig.device().index());
   rtStream_t stream = static_cast<rtStream_t>(npu_stream.stream());
   void* cu_ptr = cu_prepared.has_value() ? cu_prepared.value().data_ptr() : nullptr;
-  void* chunk_offsets_ptr =
-      chunk_offsets.has_value() ? chunk_offsets.value().data_ptr() : nullptr;
+  void* chunk_indices_ptr =
+      chunk_indices.has_value() ? chunk_indices.value().data_ptr() : nullptr;
 
   auto& op = OperationFactory::instance().chunk_fwd_o();
   auto ret = op.execute(stream,
                         static_cast<int32_t>(cdiv(V, bv)),
-                        static_cast<int32_t>(N * H),
-                        1,
+                        static_cast<int32_t>(total_chunks),
+                        static_cast<int32_t>(H),
                         [&](ArgsBuilder& ab) {
                           ab.constructArgs(q_contig.data_ptr(),
                                            k_contig.data_ptr(),
@@ -527,7 +532,7 @@ torch::Tensor npu_chunk_fwd_o(
                                            g_prepared.data_ptr(),
                                            out.data_ptr(),
                                            cu_ptr,
-                                           chunk_offsets_ptr,
+                                           chunk_indices_ptr,
                                            scale,
                                            static_cast<int32_t>(T),
                                            static_cast<int32_t>(H),
@@ -547,8 +552,8 @@ torch::Tensor npu_chunk_fwd_o(
   if (cu_prepared.has_value()) {
     record_tensor_if_needed(cu_prepared.value(), npu_stream);
   }
-  if (chunk_offsets.has_value()) {
-    record_tensor_if_needed(chunk_offsets.value(), npu_stream);
+  if (chunk_indices.has_value()) {
+    record_tensor_if_needed(chunk_indices.value(), npu_stream);
   }
   return out;
 }
