@@ -40,6 +40,15 @@ inline bool is_regular_file_path(const std::filesystem::path& path) {
   return std::filesystem::is_regular_file(path, error_code);
 }
 
+inline bool is_ascend950_soc() {
+  static const bool is_ascend950 = []() {
+    const char* soc_name = aclrtGetSocName();
+    return soc_name != nullptr &&
+           std::string(soc_name).find("Ascend950") != std::string::npos;
+  }();
+  return is_ascend950;
+}
+
 inline void append_unique_path(std::vector<std::filesystem::path>* paths,
                                const std::filesystem::path& path) {
   if (path.empty()) {
@@ -152,24 +161,28 @@ class OperationBase {
 
     void* ffts_addr = nullptr;
     uint32_t ffts_len = 0;
-    bool has_hardware_sync_arg = true;
-    auto rt_ret =
-        rtGetC2cCtrlAddr(reinterpret_cast<uint64_t*>(&ffts_addr), &ffts_len);
-    if (rt_ret != RT_ERROR_NONE) {
-      const auto acl_sync_ret = aclrtGetHardwareSyncAddr(&ffts_addr);
-      if (acl_sync_ret == ACL_ERROR_RT_FEATURE_NOT_SUPPORT) {
-        static std::once_flag warning_once;
-        std::call_once(warning_once, [rt_ret]() {
-          LOG(WARNING) << "Hardware sync address is unavailable; continuing "
-                       << "without it (rtGetC2cCtrlAddr returned " << rt_ret
-                       << ")";
-        });
-        ffts_addr = nullptr;
-        has_hardware_sync_arg = false;
-      } else if (acl_sync_ret != ACL_ERROR_NONE) {
-        LOG(ERROR) << "Failed to get hardware sync address: rt=" << rt_ret
-                   << ", acl=" << acl_sync_ret;
-        return static_cast<rtError_t>(acl_sync_ret);
+    // Ascend950 Triton binaries omit the legacy hardware-sync argument.
+    bool has_hardware_sync_arg = !is_ascend950_soc();
+    rtError_t rt_ret = RT_ERROR_NONE;
+    if (has_hardware_sync_arg) {
+      rt_ret =
+          rtGetC2cCtrlAddr(reinterpret_cast<uint64_t*>(&ffts_addr), &ffts_len);
+      if (rt_ret != RT_ERROR_NONE) {
+        const auto acl_sync_ret = aclrtGetHardwareSyncAddr(&ffts_addr);
+        if (acl_sync_ret == ACL_ERROR_RT_FEATURE_NOT_SUPPORT) {
+          static std::once_flag warning_once;
+          std::call_once(warning_once, [rt_ret]() {
+            LOG(WARNING) << "Hardware sync address is unavailable; continuing "
+                         << "without it (rtGetC2cCtrlAddr returned " << rt_ret
+                         << ")";
+          });
+          ffts_addr = nullptr;
+          has_hardware_sync_arg = false;
+        } else if (acl_sync_ret != ACL_ERROR_NONE) {
+          LOG(ERROR) << "Failed to get hardware sync address: rt=" << rt_ret
+                     << ", acl=" << acl_sync_ret;
+          return static_cast<rtError_t>(acl_sync_ret);
+        }
       }
     }
 
