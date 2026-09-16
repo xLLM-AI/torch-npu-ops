@@ -27,6 +27,7 @@
 #include <gtest/gtest.h>
 #include <torch/torch.h>
 #include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUFunctions.h>
 
 #include <optional>
 #include <string>
@@ -331,7 +332,7 @@ class TritonChunkGatedDeltaRuleTest
   static void SetUpTestSuite() {
     try {
       torch::zeros({1}, torch::TensorOptions().device("npu:0"));
-      torch_npu::init_npu("npu:" + std::to_string(kDeviceId));
+      c10_npu::SetDevice(kDeviceId);
       auto& reg = KernelRegistry::get_instance();
       std::string binary_path = GetKernelBinaryPath(kBinaryName);
       npu_initialized_ = reg.register_kernel(kKernelName, binary_path) &&
@@ -347,7 +348,6 @@ class TritonChunkGatedDeltaRuleTest
     }
     try {
       KernelRegistry::get_instance().cleanup();
-      torch_npu::finalize_npu();
     } catch (...) {
     }
   }
