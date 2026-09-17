@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include <torch/torch.h>
 #include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUFunctions.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -145,7 +146,7 @@ class TritonSplitRmsnormRopeTest : public ::testing::Test {
   static void SetUpTestSuite() {
     try {
       torch::zeros({1}, torch::TensorOptions().device("npu:0"));
-      torch_npu::init_npu("npu:" + std::to_string(kDeviceId));
+      c10_npu::SetDevice(kDeviceId);
       npu_initialized_ = true;
     } catch (...) {
       npu_initialized_ = false;
@@ -156,7 +157,6 @@ class TritonSplitRmsnormRopeTest : public ::testing::Test {
     if (npu_initialized_) {
       try {
         KernelRegistry::get_instance().cleanup();
-        torch_npu::finalize_npu();
       } catch (...) {
       }
     }
