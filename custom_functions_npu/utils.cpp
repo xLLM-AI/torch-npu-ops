@@ -10,24 +10,34 @@ ContextManager& ContextManager::get_instance() {
   return instance;
 }
 
-ContextManager::ContextManager() : atb_context_(nullptr) {}
+ContextManager::ContextManager() = default;
 
 ContextManager::~ContextManager() {
-  if (atb_context_) {
-    auto status = atb::DestroyContext(atb_context_);
+  for (auto& item : contexts_) {
+    auto status = atb::DestroyContext(item.second);
     CHECK_EQ(status, 0) << "Destroy context failed!";
-    atb_context_ = nullptr;
   }
+  contexts_.clear();
 }
 
 atb::Context* ContextManager::get_context(aclrtStream stream) {
-  std::call_once(create_flag_, [this]() {
-    auto status = atb::CreateContext(&atb_context_);
-    CHECK_EQ(status, 0) << "Create context failed!";
-  });
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto iter = contexts_.find(stream);
+  if (iter != contexts_.end()) {
+    return iter->second;
+  }
 
-  atb_context_->SetExecuteStream(stream);
-  return atb_context_;
+  // An ATB context keeps mutable execute-stream state after Execute returns.
+  // OpCommand callbacks may run on a shared host thread for several ranks, so
+  // thread-local ownership still lets a later launch retarget a context while
+  // an earlier stream is executing asynchronously.  Bind each context to one
+  // stream for its whole lifetime instead of mutating SetExecuteStream again.
+  atb::Context* context = nullptr;
+  auto status = atb::CreateContext(&context);
+  CHECK_EQ(status, 0) << "Create context failed!";
+  context->SetExecuteStream(stream);
+  contexts_.emplace(stream, context);
+  return context;
 }
 
 atb::Context* get_context(aclrtStream stream) {

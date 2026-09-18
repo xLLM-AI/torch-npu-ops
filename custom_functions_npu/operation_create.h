@@ -47,7 +47,12 @@ atb::Operation* create_atb_operation(const ParamType& param,
 
 template <typename ParamType>
 OpParamCache<ParamType>& OpParamCache<ParamType>::getInstance() {
-  static OpParamCache instance;
+  // ATB operations are mutable: Setup/Execute bind runtime state to the
+  // calling thread's ATB context and stream.  Sharing one cached operation
+  // across DP worker threads can therefore execute it with another rank's
+  // context.  Keep the cache thread-local so ranks may launch concurrently
+  // without either cross-context reuse or a process-wide serialization lock.
+  static thread_local OpParamCache instance;
   return instance;
 }
 

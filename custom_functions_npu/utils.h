@@ -5,6 +5,9 @@
 #include <glog/logging.h>
 #include <torch_npu/csrc/core/npu/NPUFormat.h>
 
+#include <mutex>
+#include <unordered_map>
+
 #include "atb/atb_infer.h"
 
 namespace atb {
@@ -21,8 +24,8 @@ class ContextManager {
 
  private:
   ContextManager();
-  std::once_flag create_flag_;
-  atb::Context* atb_context_;
+  std::mutex mutex_;
+  std::unordered_map<aclrtStream, atb::Context*> contexts_;
 };
 
 atb::Context* get_context(aclrtStream stream);
