@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -113,6 +114,12 @@ class KernelRegistry {
   char* load_binary_file(const std::string& file_path, uint32_t& file_size);
   bool register_binary(KernelInfo& info, uint32_t binary_size);
 
+  // ACL kernel registration (rtDevBinaryRegister / rtFunctionRegister) is
+  // process-global, and kernel_infos_ is shared across all worker threads. In
+  // single-process multi-device mode one thread per device registers kernels
+  // concurrently, so all accesses must be serialized. Shared lock for reads,
+  // unique lock for register/cleanup.
+  mutable std::shared_mutex mutex_;
   std::unordered_map<std::string, KernelInfo> kernel_infos_;
 };
 

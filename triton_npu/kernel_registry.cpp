@@ -21,7 +21,9 @@
 
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <nlohmann/json.hpp>
+#include <shared_mutex>
 
 namespace xllm::kernel::npu {
 
@@ -111,6 +113,10 @@ bool KernelRegistry::parse_json_config(const std::string& json_path,
 
 bool KernelRegistry::register_kernel(const std::string& kernel_name,
                                      const std::string& binary_path) {
+  // Registration mutates the shared map and performs process-global ACL
+  // registration; serialize it so concurrent per-device workers register each
+  // kernel exactly once and then share it.
+  std::unique_lock<std::shared_mutex> lock(mutex_);
   if (kernel_infos_.find(kernel_name) != kernel_infos_.end()) {
     LOG(INFO) << "Kernel '" << kernel_name << "' is already registered";
     return true;
@@ -188,6 +194,7 @@ bool KernelRegistry::register_kernel(const std::string& kernel_name,
 
 KernelStubHandle KernelRegistry::get_kernel_stub(
     const std::string& kernel_name) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   auto it = kernel_infos_.find(kernel_name);
   if (it == kernel_infos_.end()) {
     return nullptr;
@@ -197,6 +204,7 @@ KernelStubHandle KernelRegistry::get_kernel_stub(
 
 bool KernelRegistry::is_kernel_registered(
     const std::string& kernel_name) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   return kernel_infos_.find(kernel_name) != kernel_infos_.end();
 }
 
@@ -204,6 +212,7 @@ bool KernelRegistry::get_kernel_workspace_config(const std::string& kernel_name,
                                                  int64_t& workspace_size,
                                                  int64_t& lock_init_value,
                                                  int64_t& lock_num) const {
+  std::shared_lock<std::shared_mutex> lock(mutex_);
   auto it = kernel_infos_.find(kernel_name);
   if (it != kernel_infos_.end()) {
     workspace_size = it->second.workspace_size;
@@ -296,6 +305,7 @@ bool KernelRegistry::register_binary(KernelInfo& info, uint32_t binary_size) {
 }
 
 void KernelRegistry::cleanup() {
+  std::unique_lock<std::shared_mutex> lock(mutex_);
   size_t count = kernel_infos_.size();
   for (auto& [name, info] : kernel_infos_) {
     if (info.buffer) {

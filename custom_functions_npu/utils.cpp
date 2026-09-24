@@ -10,24 +10,41 @@ ContextManager& ContextManager::get_instance() {
   return instance;
 }
 
-ContextManager::ContextManager() : atb_context_(nullptr) {}
+ContextManager::ContextManager() {}
 
 ContextManager::~ContextManager() {
-  if (atb_context_) {
-    auto status = atb::DestroyContext(atb_context_);
-    CHECK_EQ(status, 0) << "Destroy context failed!";
-    atb_context_ = nullptr;
+  for (auto& entry : device_contexts_) {
+    if (entry.second != nullptr) {
+      auto status = atb::DestroyContext(entry.second);
+      CHECK_EQ(status, 0) << "Destroy context failed!";
+    }
   }
+  device_contexts_.clear();
 }
 
 atb::Context* ContextManager::get_context(aclrtStream stream) {
-  std::call_once(create_flag_, [this]() {
-    auto status = atb::CreateContext(&atb_context_);
-    CHECK_EQ(status, 0) << "Create context failed!";
-  });
+  // ATB contexts are bound to the device current at creation time, so keep one
+  // per device. The calling thread runs on its worker's device (set via
+  // aclrtSetDevice), so query that device and create/reuse its context.
+  int32_t device_id = 0;
+  auto device_status = aclrtGetDevice(&device_id);
+  CHECK_EQ(device_status, ACL_ERROR_NONE) << "aclrtGetDevice failed!";
 
-  atb_context_->SetExecuteStream(stream);
-  return atb_context_;
+  atb::Context* context = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = device_contexts_.find(device_id);
+    if (it == device_contexts_.end()) {
+      auto status = atb::CreateContext(&context);
+      CHECK_EQ(status, 0) << "Create context failed!";
+      device_contexts_[device_id] = context;
+    } else {
+      context = it->second;
+    }
+  }
+
+  context->SetExecuteStream(stream);
+  return context;
 }
 
 atb::Context* get_context(aclrtStream stream) {
