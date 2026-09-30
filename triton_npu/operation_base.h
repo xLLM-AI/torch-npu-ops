@@ -19,20 +19,20 @@
 #include <acl/acl.h>
 #include <dlfcn.h>
 #include <glog/logging.h>
+#include <torch_npu/csrc/framework/OpCommand.h>
 #include <unistd.h>
 
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <mutex>
 #include <string>
 #include <system_error>
 #include <vector>
-#include <torch_npu/csrc/framework/OpCommand.h>
 
 #include "args_builder.h"
 #include "kernel_registry.h"
-#include <iostream> 
 namespace xllm::kernel::npu {
 
 inline bool is_regular_file_path(const std::filesystem::path& path) {
@@ -47,6 +47,26 @@ inline bool is_ascend950_soc() {
            std::string(soc_name).find("Ascend950") != std::string::npos;
   }();
   return is_ascend950;
+}
+
+inline bool is_auto_map_parallel_blocks_enabled() {
+  const char* value = std::getenv("TRITON_ALL_BLOCKS_PARALLEL");
+  return value == nullptr || std::string(value) == "true" ||
+         std::string(value) == "1";
+}
+
+inline uint32_t get_physical_block_limit(const std::string& mix_mode) {
+  static const uint32_t ai_core_count = []() {
+    uint32_t count = 0;
+    if (rtGetAiCoreCount(&count) != RT_ERROR_NONE) {
+      return 0U;
+    }
+    return count;
+  }();
+  if (ai_core_count == 0) {
+    return 0U;
+  }
+  return mix_mode == "aiv" ? ai_core_count * 2U : ai_core_count;
 }
 
 inline void append_unique_path(std::vector<std::filesystem::path>* paths,
@@ -117,8 +137,8 @@ inline std::vector<std::filesystem::path> get_candidate_binary_roots() {
   return roots;
 }
 
-inline std::string resolve_npubin_path_by_kernel(const std::string& kernel_name) {
-
+inline std::string resolve_npubin_path_by_kernel(
+    const std::string& kernel_name) {
   std::string kernel_file_name = kernel_name + ".npubin";
   for (const auto& binary_root : get_candidate_binary_roots()) {
     std::filesystem::path candidate_path = binary_root / kernel_file_name;
@@ -127,10 +147,10 @@ inline std::string resolve_npubin_path_by_kernel(const std::string& kernel_name)
     }
   }
 #ifdef TRITON_BINARY_PATH
-    return (std::filesystem::path(TRITON_BINARY_PATH) / kernel_file_name)
-        .string();
+  return (std::filesystem::path(TRITON_BINARY_PATH) / kernel_file_name)
+      .string();
 #else
-    return {};
+  return {};
 #endif
 }
 
@@ -211,8 +231,29 @@ class OperationBase {
       return static_cast<rtError_t>(-1);
     }
 
+    // Triton-ascend compiles non-blacklisted kernels with auto-map parallel
+    // blocks when TRITON_ALL_BLOCKS_PARALLEL is enabled (default on): each
+    // physical block iterates over virtual blocks, so the launched block count
+    // must be capped at the physical core count while the trailing grid args
+    // keep the full grid size.
+    uint32_t launch_block_num = block_num;
+    std::string mix_mode;
+    if (is_auto_map_parallel_blocks_enabled() &&
+        KernelRegistry::get_instance().get_kernel_mix_mode(kernel_name_,
+                                                           mix_mode) &&
+        !KernelRegistry::get_instance().is_auto_blockify_blacklisted(
+            kernel_name_)) {
+      const uint32_t block_limit = get_physical_block_limit(mix_mode);
+      if (block_limit > 0 && launch_block_num > block_limit) {
+        LOG_EVERY_N(WARNING, 100)
+            << "Capping launch blocks for '" << kernel_name_ << "' from "
+            << launch_block_num << " to physical limit " << block_limit;
+        launch_block_num = block_limit;
+      }
+    }
+
     rt_ret = rtKernelLaunch(stub,
-                            block_num,
+                            launch_block_num,
                             const_cast<void*>(ab.data()),
                             static_cast<uint32_t>(ab.size()),
                             nullptr,
@@ -279,14 +320,16 @@ class OperationBase {
         at::TensorOptions(torch_npu::utils::get_npu_device_type());
     if (workspace_size > 0) {
       workspace_size *= static_cast<int64_t>(block_num);
-      *workspace = const_cast<void *>(
-        at::empty({workspace_size}, options.dtype(at::kByte)).storage().data());
+      *workspace = const_cast<void*>(
+          at::empty({workspace_size}, options.dtype(at::kByte))
+              .storage()
+              .data());
     }
 
     if (lock_num > 0) {
       const uint64_t bytes = static_cast<uint64_t>(lock_num) * sizeof(int64_t);
-      *lock = const_cast<void *>(
-        at::empty({bytes}, options.dtype(at::kByte)).storage().data());
+      *lock = const_cast<void*>(
+          at::empty({bytes}, options.dtype(at::kByte)).storage().data());
 
       std::vector<int64_t> init(static_cast<size_t>(lock_num), lock_init_value);
       auto ret = aclrtMemcpy(

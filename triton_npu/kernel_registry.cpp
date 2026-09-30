@@ -37,7 +37,8 @@ bool KernelRegistry::parse_json_config(const std::string& json_path,
                                        std::string& mix_mode,
                                        int64_t& workspace_size,
                                        int64_t& lock_init_value,
-                                       int64_t& lock_num) {
+                                       int64_t& lock_num,
+                                       bool& has_auto_blockify_blacklist_op) {
   std::ifstream file(json_path);
   if (!file.is_open()) {
     LOG(WARNING) << "Cannot open JSON file: " << json_path;
@@ -106,6 +107,12 @@ bool KernelRegistry::parse_json_config(const std::string& json_path,
     lock_num = -1;
   }
 
+  if (j.contains("has_auto_blockify_blacklist_op") &&
+      j["has_auto_blockify_blacklist_op"].is_boolean()) {
+    has_auto_blockify_blacklist_op =
+        j["has_auto_blockify_blacklist_op"].get<bool>();
+  }
+
   return true;
 }
 
@@ -129,6 +136,7 @@ bool KernelRegistry::register_kernel(const std::string& kernel_name,
   int64_t workspace_size = -1;
   int64_t lock_init_value = -1;
   int64_t lock_num = -1;
+  bool has_auto_blockify_blacklist_op = true;
 
   if (std::filesystem::exists(json_path)) {
     if (parse_json_config(json_path,
@@ -136,12 +144,15 @@ bool KernelRegistry::register_kernel(const std::string& kernel_name,
                           mix_mode,
                           workspace_size,
                           lock_init_value,
-                          lock_num)) {
+                          lock_num,
+                          has_auto_blockify_blacklist_op)) {
       LOG(INFO) << "Parsed JSON config: kernel_name=" << parsed_kernel_name
                 << ", mix_mode=" << mix_mode
                 << ", workspace_size=" << workspace_size
                 << ", lock_init_value=" << lock_init_value
-                << ", lock_num=" << lock_num;
+                << ", lock_num=" << lock_num
+                << ", has_auto_blockify_blacklist_op="
+                << has_auto_blockify_blacklist_op;
     } else {
       LOG(WARNING)
           << "Failed to parse JSON config, using provided kernel name and "
@@ -169,6 +180,7 @@ bool KernelRegistry::register_kernel(const std::string& kernel_name,
   info.workspace_size = workspace_size;
   info.lock_init_value = lock_init_value;
   info.lock_num = lock_num;
+  info.has_auto_blockify_blacklist_op = has_auto_blockify_blacklist_op;
 
   if (!register_binary(info, file_size)) {
     LOG(ERROR) << "Failed to register binary for kernel '" << kernel_name
@@ -212,6 +224,25 @@ bool KernelRegistry::get_kernel_workspace_config(const std::string& kernel_name,
     return true;
   }
   return false;
+}
+
+bool KernelRegistry::get_kernel_mix_mode(const std::string& kernel_name,
+                                         std::string& mix_mode) const {
+  auto it = kernel_infos_.find(kernel_name);
+  if (it == kernel_infos_.end()) {
+    return false;
+  }
+  mix_mode = it->second.mix_mode;
+  return true;
+}
+
+bool KernelRegistry::is_auto_blockify_blacklisted(
+    const std::string& kernel_name) const {
+  auto it = kernel_infos_.find(kernel_name);
+  if (it == kernel_infos_.end()) {
+    return true;
+  }
+  return it->second.has_auto_blockify_blacklist_op;
 }
 
 char* KernelRegistry::load_binary_file(const std::string& file_path,
