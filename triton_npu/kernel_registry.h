@@ -51,6 +51,7 @@ int rtKernelLaunch(const void* stubFunc,
                    rtStream_t sm);
 // rt other
 int rtGetC2cCtrlAddr(uint64_t* addr, uint32_t* len);
+int rtGetAiCoreCount(uint32_t* aiCoreCnt);
 
 constexpr uint32_t RT_DEV_BINARY_MAGIC_ELF_AICUBE = 0x41494343U;
 constexpr uint32_t RT_DEV_BINARY_MAGIC_ELF_AIVEC = 0x41415246U;
@@ -87,12 +88,18 @@ class KernelRegistry {
                          std::string& mix_mode,
                          int64_t& workspace_size,
                          int64_t& lock_init_value,
-                         int64_t& lock_num);
+                         int64_t& lock_num,
+                         bool& has_auto_blockify_blacklist_op);
 
   bool get_kernel_workspace_config(const std::string& kernel_name,
                                    int64_t& workspace_size,
                                    int64_t& lock_init_value,
                                    int64_t& lock_num) const;
+
+  bool get_kernel_mix_mode(const std::string& kernel_name,
+                           std::string& mix_mode) const;
+
+  bool is_auto_blockify_blacklisted(const std::string& kernel_name) const;
 
  private:
   KernelRegistry() = default;
@@ -108,6 +115,7 @@ class KernelRegistry {
     int64_t workspace_size;
     int64_t lock_init_value;
     int64_t lock_num;
+    bool has_auto_blockify_blacklist_op = true;
   };
 
   char* load_binary_file(const std::string& file_path, uint32_t& file_size);
