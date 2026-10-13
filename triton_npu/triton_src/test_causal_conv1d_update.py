@@ -1245,14 +1245,19 @@ def test_causal_conv1d_update(bs, dim, width, seqlen, has_bias, silu_activation,
         activation=activation,
         conv_state_indices=conv_state_indices,
     )
-    out_ref = causal_conv1d_update_ref(x_ref,
+    # Compute the reference on CPU: F.conv1d on NPU hits the aclop path,
+    # which is disabled on Ascend950 (ACL_OP_INIT_MODE forced to 2).
+    # Rebind conv_state_ref because causal_conv1d_update_ref updates it
+    # in-place.
+    conv_state_ref = conv_state_ref.cpu()
+    out_ref = causal_conv1d_update_ref(x_ref.cpu(),
                                        conv_state_ref,
-                                       weight,
-                                       bias,
+                                       weight.cpu(),
+                                       bias.cpu() if bias is not None else None,
                                        activation=activation)
 
-    assert torch.equal(conv_state, conv_state_ref)
-    assert torch.allclose(out, out_ref, rtol=rtol, atol=atol)
+    assert torch.equal(conv_state.cpu(), conv_state_ref)
+    assert torch.allclose(out.cpu(), out_ref, rtol=rtol, atol=atol)
     print(f"test passed for causal_conv1d_npu, batch = {bs}")
     
 
