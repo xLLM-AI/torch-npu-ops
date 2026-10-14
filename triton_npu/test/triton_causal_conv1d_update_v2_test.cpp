@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include <torch/torch.h>
 #include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUFunctions.h>
 
 #include <algorithm>
 #include <optional>
@@ -246,7 +247,7 @@ class TritonCausalConv1dUpdateV2Test : public ::testing::Test {
 
     torch::manual_seed(42);
     if (!g_npu_initialized_v2) {
-      torch_npu::init_npu(device_str_);
+      c10_npu::SetDevice(kDeviceIdV2);
       g_npu_initialized_v2 = true;
     }
     kernel_name_ = "_causal_conv1d_update_kernel_npu_tiled_v2";

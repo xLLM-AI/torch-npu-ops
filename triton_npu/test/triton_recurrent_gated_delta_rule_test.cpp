@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include <torch/torch.h>
 #include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUFunctions.h>
 
 #include <optional>
 
@@ -122,7 +123,7 @@ class TritonRecurrentGatedDeltaRuleTest : public ::testing::Test {
   static void SetUpTestSuite() {
     try {
       torch::zeros({1}, torch::TensorOptions().device("npu:0"));
-      torch_npu::init_npu("npu:" + std::to_string(kDeviceId));
+      c10_npu::SetDevice(kDeviceId);
       auto& reg = KernelRegistry::get_instance();
       std::string binary_path = GetKernelBinaryPath(
           "fused_recurrent_gated_delta_rule_fwd_kernel.npubin");
