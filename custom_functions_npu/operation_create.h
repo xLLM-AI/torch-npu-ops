@@ -60,7 +60,16 @@ atb::Operation* OpParamCache<ParamType>::get_operation(
   if (is_capturing) {
     return create_atb_operation(param, name);
   } else {
+    // Fold the current device into the cache key. An ATB operation created by
+    // atb::CreateOperation binds runner/workspace state to the device current
+    // at creation time, so a single-process multi-device run must not share one
+    // cached operation across devices (doing so makes Setup fail on the other
+    // device). Single-device runs keep one entry per param as before.
+    int32_t device_id = 0;
+    auto device_status = aclrtGetDevice(&device_id);
+    CHECK_EQ(device_status, ACL_ERROR_NONE) << "aclrtGetDevice failed!";
     uint64_t hashValue = compute_hash(param);
+    hashValue = hashValue * 131 + static_cast<uint64_t>(device_id) + 1;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       auto op_cache = op_map_.find(hashValue);

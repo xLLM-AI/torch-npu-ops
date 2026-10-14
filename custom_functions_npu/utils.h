@@ -5,11 +5,20 @@
 #include <glog/logging.h>
 #include <torch_npu/csrc/core/npu/NPUFormat.h>
 
+#include <mutex>
+#include <unordered_map>
+
 #include "atb/atb_infer.h"
 
 namespace atb {
 namespace utils {
 
+// Holds one ATB context per device. An ATB context is bound to the device that
+// is current when it is created, so a single shared context cannot be reused
+// across devices: in single-process multi-device mode each worker runs on its
+// own device, and reusing another device's context makes operation Setup fail.
+// Keying the context by device id keeps single-device behaviour unchanged (one
+// entry) while making multi-device single-process correct.
 class ContextManager {
  public:
   static ContextManager& get_instance();
@@ -21,8 +30,8 @@ class ContextManager {
 
  private:
   ContextManager();
-  std::once_flag create_flag_;
-  atb::Context* atb_context_;
+  std::mutex mutex_;
+  std::unordered_map<int32_t, atb::Context*> device_contexts_;
 };
 
 atb::Context* get_context(aclrtStream stream);
