@@ -21,9 +21,19 @@
 
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 
 namespace xllm::kernel::npu {
+
+namespace {
+
+std::mutex& registry_mutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+}  // namespace
 
 KernelRegistry& KernelRegistry::get_instance() {
   static KernelRegistry instance;
@@ -118,6 +128,7 @@ bool KernelRegistry::parse_json_config(const std::string& json_path,
 
 bool KernelRegistry::register_kernel(const std::string& kernel_name,
                                      const std::string& binary_path) {
+  std::lock_guard<std::mutex> lock(registry_mutex());
   if (kernel_infos_.find(kernel_name) != kernel_infos_.end()) {
     LOG(INFO) << "Kernel '" << kernel_name << "' is already registered";
     return true;
@@ -200,6 +211,7 @@ bool KernelRegistry::register_kernel(const std::string& kernel_name,
 
 KernelStubHandle KernelRegistry::get_kernel_stub(
     const std::string& kernel_name) const {
+  std::lock_guard<std::mutex> lock(registry_mutex());
   auto it = kernel_infos_.find(kernel_name);
   if (it == kernel_infos_.end()) {
     return nullptr;
@@ -209,6 +221,7 @@ KernelStubHandle KernelRegistry::get_kernel_stub(
 
 bool KernelRegistry::is_kernel_registered(
     const std::string& kernel_name) const {
+  std::lock_guard<std::mutex> lock(registry_mutex());
   return kernel_infos_.find(kernel_name) != kernel_infos_.end();
 }
 
@@ -216,6 +229,7 @@ bool KernelRegistry::get_kernel_workspace_config(const std::string& kernel_name,
                                                  int64_t& workspace_size,
                                                  int64_t& lock_init_value,
                                                  int64_t& lock_num) const {
+  std::lock_guard<std::mutex> lock(registry_mutex());
   auto it = kernel_infos_.find(kernel_name);
   if (it != kernel_infos_.end()) {
     workspace_size = it->second.workspace_size;
@@ -327,6 +341,7 @@ bool KernelRegistry::register_binary(KernelInfo& info, uint32_t binary_size) {
 }
 
 void KernelRegistry::cleanup() {
+  std::lock_guard<std::mutex> lock(registry_mutex());
   size_t count = kernel_infos_.size();
   for (auto& [name, info] : kernel_infos_) {
     if (info.buffer) {
