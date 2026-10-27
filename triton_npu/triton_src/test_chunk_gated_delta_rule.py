@@ -6,6 +6,12 @@ import torch.nn.functional as F
 
 from chunk_gated_delta_rule import chunk_gated_delta_rule
 
+pytestmark = pytest.mark.skip(
+    reason="chunk_gated_delta_rule is superseded by the fused mega_gdn ops and no "
+    "longer used by models; solve_tril_16x16_kernel also hits a bishengir-compile-a5 "
+    "SubViewOp assertion on Ascend950PR"
+)
+
 CHUNK_SIZE = 64
 
 
