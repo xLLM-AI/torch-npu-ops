@@ -5,7 +5,6 @@
 #include <torch_npu/csrc/framework/OpCommand.h>
 
 #include <memory>
-#include <mutex>
 #include <unordered_map>
 
 #include "atb/atb_infer.h"
@@ -33,7 +32,6 @@ class OpParamCache {
   ~OpParamCache();
 
   std::unordered_map<uint64_t, atb::Operation*> op_map_;
-  mutable std::mutex mutex_;
 };
 
 template <typename ParamType>
@@ -47,7 +45,7 @@ atb::Operation* create_atb_operation(const ParamType& param,
 
 template <typename ParamType>
 OpParamCache<ParamType>& OpParamCache<ParamType>::getInstance() {
-  static OpParamCache instance;
+  static thread_local OpParamCache instance;
   return instance;
 }
 
@@ -61,22 +59,18 @@ atb::Operation* OpParamCache<ParamType>::get_operation(
     return create_atb_operation(param, name);
   } else {
     uint64_t hashValue = compute_hash(param);
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      auto op_cache = op_map_.find(hashValue);
-      if (op_cache != op_map_.end()) {
-        return op_cache->second;
-      }
-      atb::Operation* op = create_atb_operation(param, name);
-      op_map_[hashValue] = op;
-      return op;
+    auto op_cache = op_map_.find(hashValue);
+    if (op_cache != op_map_.end()) {
+      return op_cache->second;
     }
+    atb::Operation* op = create_atb_operation(param, name);
+    op_map_[hashValue] = op;
+    return op;
   }
 }
 
 template <typename ParamType>
 atb::Operation* OpParamCache<ParamType>::get_operation(uint64_t hash_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
   auto op_cache = op_map_.find(hash_id);
   if (op_cache != op_map_.end()) {
     return op_cache->second;
@@ -89,7 +83,6 @@ atb::Operation* OpParamCache<ParamType>::get_operation(uint64_t hash_id) {
 template <typename ParamType>
 void OpParamCache<ParamType>::save_operation(uint64_t hash_id,
                                              atb::Operation* op) {
-  std::lock_guard<std::mutex> lock(mutex_);
   op_map_[hash_id] = op;
   return;
 }
@@ -101,7 +94,6 @@ OpParamCache<ParamType>::OpParamCache() {
 
 template <typename ParamType>
 OpParamCache<ParamType>::~OpParamCache() {
-  std::lock_guard<std::mutex> lock(mutex_);
   for (auto& op_item : op_map_) {
     DestroyOperation(op_item.second);
   }
