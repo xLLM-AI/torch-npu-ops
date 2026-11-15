@@ -17,7 +17,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <torch/torch.h>
-#include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUStream.h>
 
 #include <vector>
 
@@ -94,7 +94,6 @@ class TritonRopeInplaceTest
   static void SetUpTestSuite() {
     try {
       torch::zeros({1}, torch::TensorOptions().device("npu:0"));
-      torch_npu::init_npu("npu:" + std::to_string(kDeviceId));
       auto& reg = KernelRegistry::get_instance();
       std::string binary_path =
           GetKernelBinaryPath("rope_inplace_kernel.npubin");
@@ -110,7 +109,6 @@ class TritonRopeInplaceTest
     if (npu_initialized_) {
       try {
         KernelRegistry::get_instance().cleanup();
-        torch_npu::finalize_npu();
       } catch (...) {
       }
     }

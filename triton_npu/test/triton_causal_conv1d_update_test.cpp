@@ -19,7 +19,7 @@
 #include <gtest/gtest.h>
 #include <torch/nn/functional/conv.h>
 #include <torch/torch.h>
-#include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUStream.h>
 
 #include <optional>
 
@@ -144,21 +144,11 @@ class TritonCausalConv1dUpdateTest : public ::testing::Test {
     }
 
     torch::manual_seed(42);
-    torch_npu::init_npu(device_str_);
     kernel_name_ = "_causal_conv1d_update_qwen_decode_kernel";
     binary_filename_ = "_causal_conv1d_update_qwen_decode_kernel.npubin";
     binary_path_ = GetKernelBinaryPath(binary_filename_);
     auto& reg = KernelRegistry::get_instance();
     (void)reg.register_kernel(kernel_name_, binary_path_);
-  }
-
-  void TearDown() override {
-    if (npu_available_) {
-      try {
-        torch_npu::finalize_npu();
-      } catch (...) {
-      }
-    }
   }
 
   torch::TensorOptions tensor_options_;
@@ -216,20 +206,19 @@ TEST_F(TritonCausalConv1dUpdateTest, MultiBatchTest) {
                                             std::nullopt);
 
     auto npu_stream = c10_npu::getCurrentNPUStream(kDeviceId);
-    auto out =
-        npu_causal_conv1d_update(x,
-                                 conv_state,
-                                 weight,
-                                 silu_activation,
-                                 bias,
-                                 std::nullopt,
-                                 conv_state_indices,
-                                 std::nullopt,
-                                 std::nullopt,
-                                 -1,
-                                 std::nullopt,
-                                 -1,
-                                 false);
+    auto out = npu_causal_conv1d_update(x,
+                                        conv_state,
+                                        weight,
+                                        silu_activation,
+                                        bias,
+                                        std::nullopt,
+                                        conv_state_indices,
+                                        std::nullopt,
+                                        std::nullopt,
+                                        -1,
+                                        std::nullopt,
+                                        -1,
+                                        false);
     aclrtSynchronizeStream(npu_stream.stream());
 
     auto out_cpu = out.cpu();

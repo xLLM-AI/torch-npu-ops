@@ -24,7 +24,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <torch/torch.h>
-#include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUStream.h>
 
 #include <tuple>
 #include <vector>
@@ -76,8 +76,10 @@ static SplitResult fused_qkvzba_split_reshape_cat_ref(
   const int64_t ba_dim_t = v_heads_per_qk * 2;
 
   // Work in float32 for reference computation to avoid precision loss
-  auto qkvz = mixed_qkvz.reshape({batch, num_heads_qk, qkvz_dim_t}).to(torch::kFloat32);
-  auto ba = mixed_ba.reshape({batch, num_heads_qk, ba_dim_t}).to(torch::kFloat32);
+  auto qkvz =
+      mixed_qkvz.reshape({batch, num_heads_qk, qkvz_dim_t}).to(torch::kFloat32);
+  auto ba =
+      mixed_ba.reshape({batch, num_heads_qk, ba_dim_t}).to(torch::kFloat32);
 
   // Split along the last dimension of qkvz
   auto q = qkvz.slice(/*dim=*/-1, 0, head_qk);
@@ -90,12 +92,13 @@ static SplitResult fused_qkvzba_split_reshape_cat_ref(
 
   // Flatten and concatenate QKV
   auto mixed_qkv_ref = torch::cat(
-      {
-          q.reshape({batch, num_heads_qk * head_qk}),
-          k.reshape({batch, num_heads_qk * head_qk}),
-          v.reshape({batch, num_heads_v * head_v}),
-      },
-      /*dim=*/-1).to(mixed_qkvz.dtype());
+                           {
+                               q.reshape({batch, num_heads_qk * head_qk}),
+                               k.reshape({batch, num_heads_qk * head_qk}),
+                               v.reshape({batch, num_heads_v * head_v}),
+                           },
+                           /*dim=*/-1)
+                           .to(mixed_qkvz.dtype());
 
   auto z_ref = z.reshape({batch, num_heads_v, head_v}).to(mixed_qkvz.dtype());
   auto b_out = b_ref.reshape({batch, num_heads_v}).to(mixed_ba.dtype());
@@ -108,8 +111,7 @@ static SplitResult fused_qkvzba_split_reshape_cat_ref(
 // Test fixture
 // ---------------------------------------------------------------------------
 // Test parameters: (batch, num_heads_qk, num_heads_v, head_qk, head_v)
-using TestParams =
-    std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>;
+using TestParams = std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>;
 
 class TritonFusedQkvzbaSplitReshapeTest
     : public ::testing::TestWithParam<TestParams> {
@@ -119,16 +121,14 @@ class TritonFusedQkvzbaSplitReshapeTest
   static void SetUpTestSuite() {
     try {
       torch::zeros({1}, torch::TensorOptions().device("npu:0"));
-      torch_npu::init_npu("npu:" + std::to_string(kDeviceId));
       auto& reg = KernelRegistry::get_instance();
       npu_initialized_ = true;
       for (const char* kernel_name : kFusedQkvzbaSplitReshapeKernels) {
         std::string binary_path =
             GetKernelBinaryPath(std::string(kernel_name) + ".npubin");
-        npu_initialized_ =
-            npu_initialized_ &&
-            reg.register_kernel(kernel_name, binary_path) &&
-            reg.get_kernel_stub(kernel_name) != nullptr;
+        npu_initialized_ = npu_initialized_ &&
+                           reg.register_kernel(kernel_name, binary_path) &&
+                           reg.get_kernel_stub(kernel_name) != nullptr;
       }
     } catch (...) {
       npu_initialized_ = false;
@@ -139,7 +139,6 @@ class TritonFusedQkvzbaSplitReshapeTest
     if (npu_initialized_) {
       try {
         KernelRegistry::get_instance().cleanup();
-        torch_npu::finalize_npu();
       } catch (...) {
       }
     }
@@ -194,19 +193,19 @@ TEST_P(TritonFusedQkvzbaSplitReshapeTest, SplitReshapeKernelTest) {
 
   // Reference output
   auto ref = fused_qkvzba_split_reshape_cat_ref(
-      mixed_qkvz_cpu, mixed_ba_cpu, num_heads_qk, num_heads_v, head_qk,
-      head_v);
+      mixed_qkvz_cpu, mixed_ba_cpu, num_heads_qk, num_heads_v, head_qk, head_v);
 
   // Run kernel on NPU
   auto mixed_qkvz_npu = mixed_qkvz_cpu.to(device).contiguous();
   auto mixed_ba_npu = mixed_ba_cpu.to(device).contiguous();
 
-  auto [out_qkv, out_z, out_b, out_a] = npu_fused_qkvzba_split_reshape_cat(
-      mixed_qkvz_npu, mixed_ba_npu,
-      static_cast<int32_t>(num_heads_qk),
-      static_cast<int32_t>(num_heads_v),
-      static_cast<int32_t>(head_qk),
-      static_cast<int32_t>(head_v));
+  auto [out_qkv, out_z, out_b, out_a] =
+      npu_fused_qkvzba_split_reshape_cat(mixed_qkvz_npu,
+                                         mixed_ba_npu,
+                                         static_cast<int32_t>(num_heads_qk),
+                                         static_cast<int32_t>(num_heads_v),
+                                         static_cast<int32_t>(head_qk),
+                                         static_cast<int32_t>(head_v));
 
   // Synchronise before comparing
   auto npu_stream = c10_npu::getCurrentNPUStream(kDeviceId);
@@ -220,10 +219,9 @@ TEST_P(TritonFusedQkvzbaSplitReshapeTest, SplitReshapeKernelTest) {
     float max_diff = torch::max(diff).item<float>();
     EXPECT_LT(max_diff, kTolerance)
         << name << " mismatch: max_diff=" << max_diff
-        << " > tolerance=" << kTolerance
-        << " (batch=" << batch << " nqk=" << num_heads_qk
-        << " nv=" << num_heads_v << " hqk=" << head_qk << " hv=" << head_v
-        << ")";
+        << " > tolerance=" << kTolerance << " (batch=" << batch
+        << " nqk=" << num_heads_qk << " nv=" << num_heads_v
+        << " hqk=" << head_qk << " hv=" << head_v << ")";
   };
 
   check(ref.mixed_qkv, out_qkv, "mixed_qkv");
@@ -241,9 +239,9 @@ INSTANTIATE_TEST_SUITE_P(
     TritonFusedQkvzbaSplitReshapeTest,
     ::testing::Values(
         // (batch, num_heads_qk, num_heads_v, head_qk, head_v)
-        std::make_tuple(1,  8, 16, 128, 128),
-        std::make_tuple(4,  8, 16, 128, 128),
-        std::make_tuple(8,  8, 16, 128, 128),
+        std::make_tuple(1, 8, 16, 128, 128),
+        std::make_tuple(4, 8, 16, 128, 128),
+        std::make_tuple(8, 8, 16, 128, 128),
         std::make_tuple(1, 16, 16, 128, 128),
         std::make_tuple(1, 16, 32, 128, 128),
         std::make_tuple(1, 16, 48, 128, 128),
@@ -252,33 +250,33 @@ INSTANTIATE_TEST_SUITE_P(
         std::make_tuple(8, 16, 32, 128, 128),
         // Qwen3.5 0.8B / 2B local heads: 16->16 split by TP1/2/4/8.
         std::make_tuple(64, 16, 16, 128, 128),
-        std::make_tuple(64,  8,  8, 128, 128),
-        std::make_tuple(64,  4,  4, 128, 128),
-        std::make_tuple(64,  2,  2, 128, 128),
+        std::make_tuple(64, 8, 8, 128, 128),
+        std::make_tuple(64, 4, 4, 128, 128),
+        std::make_tuple(64, 2, 2, 128, 128),
         // Qwen3.5 9B / Qwen3.6 35B-A3B local heads: 16->32 split by TP1/2/4/8.
         std::make_tuple(64, 16, 32, 128, 128),
-        std::make_tuple(64,  8, 16, 128, 128),
-        std::make_tuple(64,  4,  8, 128, 128),
-        std::make_tuple(64,  2,  4, 128, 128),
+        std::make_tuple(64, 8, 16, 128, 128),
+        std::make_tuple(64, 4, 8, 128, 128),
+        std::make_tuple(64, 2, 4, 128, 128),
         // Qwen3.5 27B / Qwen3.6 27B local heads: 16->48 split by TP1/2/4/8.
         std::make_tuple(64, 16, 48, 128, 128),
-        std::make_tuple(64,  8, 24, 128, 128),
-        std::make_tuple(64,  4, 12, 128, 128),
-        std::make_tuple(64,  2,  6, 128, 128),
+        std::make_tuple(64, 8, 24, 128, 128),
+        std::make_tuple(64, 4, 12, 128, 128),
+        std::make_tuple(64, 2, 6, 128, 128),
         // Qwen3.5 397B-A17B / 122B-A10B local heads: 16->64 split by TP1/2/4/8.
         std::make_tuple(64, 16, 64, 128, 128),
-        std::make_tuple(64,  8, 32, 128, 128),
-        std::make_tuple(64,  4, 16, 128, 128),
-        std::make_tuple(64,  2,  8, 128, 128),
+        std::make_tuple(64, 8, 32, 128, 128),
+        std::make_tuple(64, 4, 16, 128, 128),
+        std::make_tuple(64, 2, 8, 128, 128),
         // Larger batches to exercise >65535-token code path
-        std::make_tuple(4096,  2,  4, 128, 128),
+        std::make_tuple(4096, 2, 4, 128, 128),
         std::make_tuple(4096, 16, 16, 128, 128),
-        std::make_tuple(4096,  4,  8, 128, 128),
-        std::make_tuple(4096,  8,  16, 128, 128),
-        std::make_tuple(4096, 16,  32, 128, 128),
-        std::make_tuple(4096, 16,  48, 128, 128),
-        std::make_tuple(4096, 16,  64, 128, 128),
-        std::make_tuple(256,  8, 16, 128, 128)));
+        std::make_tuple(4096, 4, 8, 128, 128),
+        std::make_tuple(4096, 8, 16, 128, 128),
+        std::make_tuple(4096, 16, 32, 128, 128),
+        std::make_tuple(4096, 16, 48, 128, 128),
+        std::make_tuple(4096, 16, 64, 128, 128),
+        std::make_tuple(256, 8, 16, 128, 128)));
 
 }  // namespace xllm::kernel::npu
 

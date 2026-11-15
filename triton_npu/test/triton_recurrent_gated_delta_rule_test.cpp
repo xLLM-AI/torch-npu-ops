@@ -18,7 +18,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <torch/torch.h>
-#include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUStream.h>
 
 #include <optional>
 
@@ -122,7 +122,6 @@ class TritonRecurrentGatedDeltaRuleTest : public ::testing::Test {
   static void SetUpTestSuite() {
     try {
       torch::zeros({1}, torch::TensorOptions().device("npu:0"));
-      torch_npu::init_npu("npu:" + std::to_string(kDeviceId));
       auto& reg = KernelRegistry::get_instance();
       std::string binary_path = GetKernelBinaryPath(
           "fused_recurrent_gated_delta_rule_fwd_kernel.npubin");
@@ -133,8 +132,9 @@ class TritonRecurrentGatedDeltaRuleTest : public ::testing::Test {
                               binary_path) &&
           reg.get_kernel_stub("fused_recurrent_gated_delta_rule_fwd_kernel") !=
               nullptr &&
-          reg.register_kernel("fused_recurrent_gated_delta_rule_spec_fwd_kernel",
-                              spec_binary_path) &&
+          reg.register_kernel(
+              "fused_recurrent_gated_delta_rule_spec_fwd_kernel",
+              spec_binary_path) &&
           reg.get_kernel_stub(
               "fused_recurrent_gated_delta_rule_spec_fwd_kernel") != nullptr;
     } catch (...) {
@@ -348,14 +348,12 @@ TEST_F(TritonRecurrentGatedDeltaRuleTest, SpecAccuracyAcceptedOffsets) {
   auto k = torch::randn({num_sequences, T, num_heads, head_dim}, dtype);
   auto v = torch::randn({num_sequences, T, num_v_heads, head_dim}, dtype);
   auto beta = torch::rand({num_sequences, T, num_v_heads}, dtype).sigmoid();
-  auto g =
-      torch::log_sigmoid(torch::rand({num_sequences, T, num_v_heads},
-                                     torch::kFloat32));
+  auto g = torch::log_sigmoid(
+      torch::rand({num_sequences, T, num_v_heads}, torch::kFloat32));
   auto initial_state =
       torch::randn({32, num_v_heads, head_dim, head_dim}, torch::kFloat32);
-  auto state_indices =
-      torch::tensor({{2, 4, 6, 8}, {11, 13, 15, 17}, {20, 22, 24, 26}},
-                    torch::kInt32);
+  auto state_indices = torch::tensor(
+      {{2, 4, 6, 8}, {11, 13, 15, 17}, {20, 22, 24, 26}}, torch::kInt32);
   auto num_accepted_tokens = torch::tensor({1, 2, 3}, torch::kInt32);
 
   auto q_d = q.reshape({1, total_tokens, num_heads, head_dim}).to(device);
@@ -368,8 +366,9 @@ TEST_F(TritonRecurrentGatedDeltaRuleTest, SpecAccuracyAcceptedOffsets) {
   auto num_accepted_tokens_d = num_accepted_tokens.to(device);
 
   auto cu_seqlens =
-      torch::arange(num_sequences + 1,
-                    torch::TensorOptions().dtype(torch::kInt64).device(device)) *
+      torch::arange(
+          num_sequences + 1,
+          torch::TensorOptions().dtype(torch::kInt64).device(device)) *
       T;
 
   std::vector<torch::Tensor> ref_chunks;
@@ -381,7 +380,8 @@ TEST_F(TritonRecurrentGatedDeltaRuleTest, SpecAccuracyAcceptedOffsets) {
     auto g_i = g_d.slice(1, seq_idx * T, (seq_idx + 1) * T).cpu();
     auto beta_i = beta_d.slice(1, seq_idx * T, (seq_idx + 1) * T).cpu();
     auto state_idx =
-        state_indices.index({seq_idx, num_accepted_tokens[seq_idx].item<int>() - 1})
+        state_indices
+            .index({seq_idx, num_accepted_tokens[seq_idx].item<int>() - 1})
             .item<int>();
     auto h = initial_state.index({state_idx}).unsqueeze(0);
     auto q_i_expanded = q_i.repeat_interleave(num_v_heads / num_heads, 2);
@@ -394,15 +394,15 @@ TEST_F(TritonRecurrentGatedDeltaRuleTest, SpecAccuracyAcceptedOffsets) {
     std::vector<torch::Tensor> seq_outputs;
     std::vector<torch::Tensor> seq_states;
     for (int64_t token_idx = 0; token_idx < T; ++token_idx) {
-      auto [ref_i, h_next] =
-          torch_recurrent_gated_delta_rule(q_i_expanded.slice(1, token_idx, token_idx + 1),
-                                           k_i_expanded.slice(1, token_idx, token_idx + 1),
-                                           v_i.slice(1, token_idx, token_idx + 1),
-                                           g_i.slice(1, token_idx, token_idx + 1),
-                                           beta_i.slice(1, token_idx, token_idx + 1),
-                                           h,
-                                           true,
-                                           std::optional<float>(scale_val));
+      auto [ref_i, h_next] = torch_recurrent_gated_delta_rule(
+          q_i_expanded.slice(1, token_idx, token_idx + 1),
+          k_i_expanded.slice(1, token_idx, token_idx + 1),
+          v_i.slice(1, token_idx, token_idx + 1),
+          g_i.slice(1, token_idx, token_idx + 1),
+          beta_i.slice(1, token_idx, token_idx + 1),
+          h,
+          true,
+          std::optional<float>(scale_val));
       seq_outputs.emplace_back(ref_i);
       seq_states.emplace_back(h_next.squeeze(0));
       h = h_next;
@@ -410,8 +410,8 @@ TEST_F(TritonRecurrentGatedDeltaRuleTest, SpecAccuracyAcceptedOffsets) {
     ref_chunks.emplace_back(torch::cat(seq_outputs, 1));
     ref_state_chunks.emplace_back(torch::stack(seq_states, 0));
   }
-  auto golden_o =
-      torch::cat(ref_chunks, 1).reshape({num_sequences, T, num_v_heads, head_dim});
+  auto golden_o = torch::cat(ref_chunks, 1)
+                      .reshape({num_sequences, T, num_v_heads, head_dim});
   auto golden_states = torch::cat(ref_state_chunks, 0);
 
   auto npu_stream = c10_npu::getCurrentNPUStream(kDeviceId);
@@ -437,8 +437,7 @@ TEST_F(TritonRecurrentGatedDeltaRuleTest, SpecAccuracyAcceptedOffsets) {
   auto output_diff =
       (golden_o.to(torch::kFloat32) - o.to(torch::kFloat32)).abs();
   EXPECT_LT(output_diff.max().item<float>(), kOutputAtol)
-      << "Spec output mismatch: max diff = "
-      << output_diff.max().item<float>();
+      << "Spec output mismatch: max diff = " << output_diff.max().item<float>();
 
   auto state_diff =
       (golden_states.to(torch::kFloat32) - states.to(torch::kFloat32)).abs();
@@ -467,15 +466,14 @@ TEST_F(TritonRecurrentGatedDeltaRuleTest, SpecAccuracyTp4LocalShape) {
   auto k = torch::randn({num_sequences, T, num_heads, head_dim}, dtype);
   auto v = torch::randn({num_sequences, T, num_v_heads, head_dim}, dtype);
   auto beta = torch::rand({num_sequences, T, num_v_heads}, dtype).sigmoid();
-  auto g =
-      torch::log_sigmoid(torch::rand({num_sequences, T, num_v_heads},
-                                     torch::kFloat32));
+  auto g = torch::log_sigmoid(
+      torch::rand({num_sequences, T, num_v_heads}, torch::kFloat32));
   auto initial_state =
       torch::randn({64, num_v_heads, head_dim, head_dim}, torch::kFloat32);
 
-  auto state_indices =
-      (torch::arange(num_sequences * T, torch::kInt32).reshape({num_sequences, T}) +
-       8);
+  auto state_indices = (torch::arange(num_sequences * T, torch::kInt32)
+                            .reshape({num_sequences, T}) +
+                        8);
   auto num_accepted_tokens =
       torch::tensor({1, 2, 1, 2, 1, 2, 1, 2}, torch::kInt32);
 
@@ -489,8 +487,9 @@ TEST_F(TritonRecurrentGatedDeltaRuleTest, SpecAccuracyTp4LocalShape) {
   auto num_accepted_tokens_d = num_accepted_tokens.to(device);
 
   auto cu_seqlens =
-      torch::arange(num_sequences + 1,
-                    torch::TensorOptions().dtype(torch::kInt64).device(device)) *
+      torch::arange(
+          num_sequences + 1,
+          torch::TensorOptions().dtype(torch::kInt64).device(device)) *
       T;
 
   std::vector<torch::Tensor> ref_chunks;
@@ -514,15 +513,15 @@ TEST_F(TritonRecurrentGatedDeltaRuleTest, SpecAccuracyTp4LocalShape) {
     std::vector<torch::Tensor> seq_outputs;
     std::vector<torch::Tensor> seq_states;
     for (int64_t token_idx = 0; token_idx < T; ++token_idx) {
-      auto [ref_i, h_next] =
-          torch_recurrent_gated_delta_rule(q_i_expanded.slice(1, token_idx, token_idx + 1),
-                                           k_i_expanded.slice(1, token_idx, token_idx + 1),
-                                           v_i.slice(1, token_idx, token_idx + 1),
-                                           g_i.slice(1, token_idx, token_idx + 1),
-                                           beta_i.slice(1, token_idx, token_idx + 1),
-                                           h,
-                                           true,
-                                           std::optional<float>(scale_val));
+      auto [ref_i, h_next] = torch_recurrent_gated_delta_rule(
+          q_i_expanded.slice(1, token_idx, token_idx + 1),
+          k_i_expanded.slice(1, token_idx, token_idx + 1),
+          v_i.slice(1, token_idx, token_idx + 1),
+          g_i.slice(1, token_idx, token_idx + 1),
+          beta_i.slice(1, token_idx, token_idx + 1),
+          h,
+          true,
+          std::optional<float>(scale_val));
       seq_outputs.emplace_back(ref_i);
       seq_states.emplace_back(h_next.squeeze(0));
       h = h_next;
@@ -530,8 +529,8 @@ TEST_F(TritonRecurrentGatedDeltaRuleTest, SpecAccuracyTp4LocalShape) {
     ref_chunks.emplace_back(torch::cat(seq_outputs, 1));
     ref_state_chunks.emplace_back(torch::stack(seq_states, 0));
   }
-  auto golden_o =
-      torch::cat(ref_chunks, 1).reshape({num_sequences, T, num_v_heads, head_dim});
+  auto golden_o = torch::cat(ref_chunks, 1)
+                      .reshape({num_sequences, T, num_v_heads, head_dim});
   auto golden_states = torch::cat(ref_state_chunks, 0);
 
   auto npu_stream = c10_npu::getCurrentNPUStream(kDeviceId);

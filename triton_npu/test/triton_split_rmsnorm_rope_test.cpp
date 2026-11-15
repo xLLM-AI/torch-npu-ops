@@ -18,7 +18,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <torch/torch.h>
-#include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUStream.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -124,8 +124,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> Ref(
   const int64_t num_tokens = qkv.size(0);
   auto q = qkv.slice(1, 0, q_hidden_size);
   auto k = qkv.slice(1, q_hidden_size, q_hidden_size + kv_hidden_size);
-  auto v = qkv.slice(1, q_hidden_size + kv_hidden_size,
-                     q_hidden_size + 2 * kv_hidden_size);
+  auto v = qkv.slice(
+      1, q_hidden_size + kv_hidden_size, q_hidden_size + 2 * kv_hidden_size);
 
   q = q.reshape({num_tokens, q_hidden_size / head_dim, head_dim});
   k = k.reshape({num_tokens, kv_hidden_size / head_dim, head_dim});
@@ -145,7 +145,6 @@ class TritonSplitRmsnormRopeTest : public ::testing::Test {
   static void SetUpTestSuite() {
     try {
       torch::zeros({1}, torch::TensorOptions().device("npu:0"));
-      torch_npu::init_npu("npu:" + std::to_string(kDeviceId));
       npu_initialized_ = true;
     } catch (...) {
       npu_initialized_ = false;
@@ -156,7 +155,6 @@ class TritonSplitRmsnormRopeTest : public ::testing::Test {
     if (npu_initialized_) {
       try {
         KernelRegistry::get_instance().cleanup();
-        torch_npu::finalize_npu();
       } catch (...) {
       }
     }
@@ -212,13 +210,19 @@ TEST_F(TritonSplitRmsnormRopeTest, RandomInputMatchesCpuReference) {
   ASSERT_TRUE(KernelBinaryExists(binary_filename))
       << "missing kernel binary: " << GetKernelBinaryPath(binary_filename);
   auto& reg = KernelRegistry::get_instance();
-  ASSERT_TRUE(reg.register_kernel(kernel_name,
-                                  GetKernelBinaryPath(binary_filename)));
+  ASSERT_TRUE(
+      reg.register_kernel(kernel_name, GetKernelBinaryPath(binary_filename)));
   ASSERT_NE(reg.get_kernel_stub(kernel_name), nullptr);
 
-  auto [q_ref, k_ref, v_ref] =
-      Ref(qkv, sin, cos, q_weight, k_weight, q_hidden_size, kv_hidden_size,
-          head_dim, eps);
+  auto [q_ref, k_ref, v_ref] = Ref(qkv,
+                                   sin,
+                                   cos,
+                                   q_weight,
+                                   k_weight,
+                                   q_hidden_size,
+                                   kv_hidden_size,
+                                   head_dim,
+                                   eps);
 
   auto device = at::Device("npu:" + std::to_string(kDeviceId));
   auto qkv_npu = qkv_fp32.to(torch::kBFloat16).to(device).contiguous();
@@ -229,19 +233,18 @@ TEST_F(TritonSplitRmsnormRopeTest, RandomInputMatchesCpuReference) {
   auto k_weight_npu =
       k_weight_fp32.to(torch::kBFloat16).to(device).contiguous();
 
-  auto [q_out, k_out, v_out] =
-      npu_split_rmsnorm_rope(qkv_npu,
-                             sin_npu,
-                             cos_npu,
-                             q_weight_npu,
-                             k_weight_npu,
-                             q_hidden_size,
-                             kv_hidden_size,
-                             head_dim,
-                             eps,
-                             std::nullopt,
-                             std::nullopt,
-                             bias);
+  auto [q_out, k_out, v_out] = npu_split_rmsnorm_rope(qkv_npu,
+                                                      sin_npu,
+                                                      cos_npu,
+                                                      q_weight_npu,
+                                                      k_weight_npu,
+                                                      q_hidden_size,
+                                                      kv_hidden_size,
+                                                      head_dim,
+                                                      eps,
+                                                      std::nullopt,
+                                                      std::nullopt,
+                                                      bias);
 
   auto npu_stream = c10_npu::getCurrentNPUStream(kDeviceId);
   ASSERT_EQ(aclrtSynchronizeStream(npu_stream.stream()), ACL_ERROR_NONE);
@@ -266,4 +269,3 @@ int main(int argc, char** argv) {
   xllm::testing::init_npu_test_runtime();
   return RUN_ALL_TESTS();
 }
-

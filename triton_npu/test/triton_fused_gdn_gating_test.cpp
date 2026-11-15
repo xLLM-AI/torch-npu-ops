@@ -18,7 +18,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <torch/torch.h>
-#include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUStream.h>
 
 #include <array>
 
@@ -81,7 +81,6 @@ class TritonFusedGdnGatingTest : public ::testing::Test {
     binary_filename_ = "fused_gdn_gating_decode_kernel.npubin";
 
     torch::manual_seed(42);
-    torch_npu::init_npu(device_str_);
 
     binary_path_ = GetKernelBinaryPath(binary_filename_);
     auto& reg = KernelRegistry::get_instance();
@@ -91,15 +90,6 @@ class TritonFusedGdnGatingTest : public ::testing::Test {
         << binary_path_;
     ASSERT_NE(reg.get_kernel_stub(kernel_name_), nullptr)
         << "Failed to get kernel stub: " << kernel_name_;
-  }
-
-  void TearDown() override {
-    if (npu_available_) {
-      try {
-        torch_npu::finalize_npu();
-      } catch (...) {
-      }
-    }
   }
 
   torch::TensorOptions tensor_options_;
