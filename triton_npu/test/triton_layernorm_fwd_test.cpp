@@ -17,7 +17,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <torch/torch.h>
-#include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUStream.h>
 
 #include <iomanip>
 #include <iostream>
@@ -123,7 +123,6 @@ class TritonLayerNormFwdTest : public ::testing::Test {
   static void SetUpTestSuite() {
     try {
       torch::zeros({1}, torch::TensorOptions().device("npu:0"));
-      torch_npu::init_npu("npu:" + std::to_string(kDeviceId));
       npu_initialized_ = true;
     } catch (...) {
       npu_initialized_ = false;
@@ -134,7 +133,6 @@ class TritonLayerNormFwdTest : public ::testing::Test {
     if (npu_initialized_) {
       try {
         KernelRegistry::get_instance().cleanup();
-        torch_npu::finalize_npu();
       } catch (...) {
       }
     }
@@ -308,12 +306,12 @@ TEST_F(TritonLayerNormFwdTest, KernelTestFastRMSBF16ZNoBiasNoMask) {
   auto tensor_options =
       torch::TensorOptions().dtype(torch::kBFloat16).device(device);
 
-  auto x = torch::randn({batch_size, seq_len, hidden_dim}, tensor_options) *
-           scale;
+  auto x =
+      torch::randn({batch_size, seq_len, hidden_dim}, tensor_options) * scale;
   auto weight = torch::randn({hidden_dim}, tensor_options) * scale;
   torch::Tensor bias;
-  auto z = torch::randn({batch_size, seq_len, hidden_dim}, tensor_options) *
-           scale;
+  auto z =
+      torch::randn({batch_size, seq_len, hidden_dim}, tensor_options) * scale;
   std::optional<torch::Tensor> z_optional = z;
 
   auto output_golden = layer_norm_golden_cpu(
@@ -330,7 +328,7 @@ TEST_F(TritonLayerNormFwdTest, KernelTestFastRMSBF16ZNoBiasNoMask) {
   auto output_cpu = output.cpu().contiguous();
 
   auto output_diff = torch::abs(output_cpu.to(torch::kFloat32) -
-                               output_golden_cpu.to(torch::kFloat32));
+                                output_golden_cpu.to(torch::kFloat32));
   float output_max_diff = torch::max(output_diff).item().to<float>();
 
   EXPECT_LT(output_max_diff, kBfloat16Tolerance)

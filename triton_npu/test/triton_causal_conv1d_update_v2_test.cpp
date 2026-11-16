@@ -18,7 +18,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <torch/torch.h>
-#include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUStream.h>
 
 #include <algorithm>
 #include <optional>
@@ -34,11 +34,11 @@ namespace xllm::kernel::npu {
 
 constexpr float kToleranceV2 = 5e-2f;
 constexpr int32_t kDeviceIdV2 = 0;
-bool g_npu_initialized_v2 = false;
 
-int64_t ResolveCacheIndex(const std::optional<torch::Tensor>& conv_state_indices,
-                          int64_t batch_idx,
-                          int64_t slot_idx) {
+int64_t ResolveCacheIndex(
+    const std::optional<torch::Tensor>& conv_state_indices,
+    int64_t batch_idx,
+    int64_t slot_idx) {
   if (!conv_state_indices.has_value()) {
     return batch_idx;
   }
@@ -91,8 +91,10 @@ torch::Tensor causal_conv1d_update_ref_v2(
     dim = x_work.size(1);
     seqlen = x_work.size(2);
     x_kernel = x_work.transpose(1, 2).contiguous().view({batch * seqlen, dim});
-    qsl = torch::arange(
-        0, (batch + 1) * seqlen, seqlen, torch::TensorOptions().dtype(torch::kInt32));
+    qsl = torch::arange(0,
+                        (batch + 1) * seqlen,
+                        seqlen,
+                        torch::TensorOptions().dtype(torch::kInt32));
   }
 
   torch::Tensor slot_table;
@@ -107,18 +109,21 @@ torch::Tensor causal_conv1d_update_ref_v2(
     slot_table = conv_state_indices->to(torch::kInt32).contiguous();
   }
 
-  auto bias_tensor = bias.has_value()
-                         ? bias->to(torch::kFloat).contiguous()
-                         : torch::zeros({dim}, torch::TensorOptions().dtype(torch::kFloat));
+  auto bias_tensor =
+      bias.has_value()
+          ? bias->to(torch::kFloat).contiguous()
+          : torch::zeros({dim}, torch::TensorOptions().dtype(torch::kFloat));
   auto x_float = x_kernel.to(torch::kFloat).contiguous();
   auto weight_float = weight.to(torch::kFloat).contiguous();
   auto state_float = conv_state.to(torch::kFloat).contiguous().clone();
   auto out_float = torch::empty_like(x_float);
 
-  auto zero_i32 = torch::zeros({batch}, torch::TensorOptions().dtype(torch::kInt32));
-  auto last_idx = block_idx_last_scheduled_token.has_value()
-                      ? block_idx_last_scheduled_token->to(torch::kInt32).contiguous()
-                      : zero_i32;
+  auto zero_i32 =
+      torch::zeros({batch}, torch::TensorOptions().dtype(torch::kInt32));
+  auto last_idx =
+      block_idx_last_scheduled_token.has_value()
+          ? block_idx_last_scheduled_token->to(torch::kInt32).contiguous()
+          : zero_i32;
   auto init_idx = initial_state_idx.has_value()
                       ? initial_state_idx->to(torch::kInt32).contiguous()
                       : zero_i32;
@@ -154,8 +159,10 @@ torch::Tensor causal_conv1d_update_ref_v2(
     const int64_t out_idx = ResolveCacheIndex(slot_table, b, last_slot);
     const bool input_valid = in_idx >= 0 && in_idx < num_cache_lines;
     const bool output_valid = out_idx >= 0 && out_idx < num_cache_lines;
-    const int64_t keep_shift = seq_len < state_len_run ? state_len_run - seq_len : 0;
-    const int64_t tail_start = seq_len >= state_len_run ? seq_len - state_len_run : 0;
+    const int64_t keep_shift =
+        seq_len < state_len_run ? state_len_run - seq_len : 0;
+    const int64_t tail_start =
+        seq_len >= state_len_run ? seq_len - state_len_run : 0;
 
     for (int64_t feat = 0; feat < dim; ++feat) {
       std::vector<float> cols(std::max<int64_t>(width - 1, 0), 0.0f);
@@ -191,12 +198,12 @@ torch::Tensor causal_conv1d_update_ref_v2(
       if (seq_len < state_len_run) {
         if (input_valid) {
           for (int64_t dst_tok = 0; dst_tok < keep_shift; ++dst_tok) {
-            const int64_t src_offset =
-                in_idx * stride_state_seq + feat * stride_state_dim +
-                (dst_tok + seq_len) * stride_state_token;
-            const int64_t dst_offset =
-                out_idx * stride_state_seq + feat * stride_state_dim +
-                dst_tok * stride_state_token;
+            const int64_t src_offset = in_idx * stride_state_seq +
+                                       feat * stride_state_dim +
+                                       (dst_tok + seq_len) * stride_state_token;
+            const int64_t dst_offset = out_idx * stride_state_seq +
+                                       feat * stride_state_dim +
+                                       dst_tok * stride_state_token;
             state_ptr[dst_offset] = state_ptr[src_offset];
           }
         }
@@ -206,18 +213,18 @@ torch::Tensor causal_conv1d_update_ref_v2(
             continue;
           }
           const int64_t x_offset = (start + x_tok) * stride_x_token + feat;
-          const int64_t dst_offset =
-              out_idx * stride_state_seq + feat * stride_state_dim +
-              dst_tok * stride_state_token;
+          const int64_t dst_offset = out_idx * stride_state_seq +
+                                     feat * stride_state_dim +
+                                     dst_tok * stride_state_token;
           state_ptr[dst_offset] = x_ptr[x_offset];
         }
       } else {
         for (int64_t dst_tok = 0; dst_tok < state_len_run; ++dst_tok) {
           const int64_t x_offset =
               (start + tail_start + dst_tok) * stride_x_token + feat;
-          const int64_t dst_offset =
-              out_idx * stride_state_seq + feat * stride_state_dim +
-              dst_tok * stride_state_token;
+          const int64_t dst_offset = out_idx * stride_state_seq +
+                                     feat * stride_state_dim +
+                                     dst_tok * stride_state_token;
           state_ptr[dst_offset] = x_ptr[x_offset];
         }
       }
@@ -225,7 +232,8 @@ torch::Tensor causal_conv1d_update_ref_v2(
   }
 
   auto out = activation ? torch::silu(out_float) : out_float;
-  conv_state.copy_(state_float.view_as(conv_state).to(conv_state.scalar_type()));
+  conv_state.copy_(
+      state_float.view_as(conv_state).to(conv_state.scalar_type()));
   return out.to(dtype_in);
 }
 
@@ -245,10 +253,6 @@ class TritonCausalConv1dUpdateV2Test : public ::testing::Test {
     }
 
     torch::manual_seed(42);
-    if (!g_npu_initialized_v2) {
-      torch_npu::init_npu(device_str_);
-      g_npu_initialized_v2 = true;
-    }
     kernel_name_ = "_causal_conv1d_update_kernel_npu_tiled_v2";
     binary_filename_ = "_causal_conv1d_update_kernel_npu_tiled_v2.npubin";
     binary_path_ = GetKernelBinaryPath(binary_filename_);
@@ -276,8 +280,7 @@ void RunVarlenApcDecodeCase(const torch::TensorOptions& tensor_options,
   auto x = torch::randn({batch, dim}, tensor_options);
   auto x_ref = x.cpu();
 
-  auto conv_state =
-      torch::randn({batch * 2, dim, width - 1}, tensor_options);
+  auto conv_state = torch::randn({batch * 2, dim, width - 1}, tensor_options);
   auto conv_state_before = conv_state.detach().clone().cpu();
   auto conv_state_ref = conv_state.detach().clone().cpu();
 
@@ -286,29 +289,29 @@ void RunVarlenApcDecodeCase(const torch::TensorOptions& tensor_options,
   auto bias = torch::zeros({dim}, tensor_options);
   auto bias_ref = bias.cpu();
 
-  auto base_idx =
-      torch::arange(batch, torch::TensorOptions().dtype(torch::kInt32).device(device));
-  auto conv_state_indices = torch::stack({base_idx, base_idx + batch}, 1).contiguous();
-  auto block_idx_last_scheduled_token =
-      torch::ones({batch}, torch::TensorOptions().dtype(torch::kInt32).device(device));
-  auto initial_state_idx =
-      torch::zeros({batch}, torch::TensorOptions().dtype(torch::kInt32).device(device));
-  auto query_start_loc =
-      torch::arange(0,
-                    batch + 1,
-                    torch::TensorOptions().dtype(torch::kInt32).device(device));
+  auto base_idx = torch::arange(
+      batch, torch::TensorOptions().dtype(torch::kInt32).device(device));
+  auto conv_state_indices =
+      torch::stack({base_idx, base_idx + batch}, 1).contiguous();
+  auto block_idx_last_scheduled_token = torch::ones(
+      {batch}, torch::TensorOptions().dtype(torch::kInt32).device(device));
+  auto initial_state_idx = torch::zeros(
+      {batch}, torch::TensorOptions().dtype(torch::kInt32).device(device));
+  auto query_start_loc = torch::arange(
+      0, batch + 1, torch::TensorOptions().dtype(torch::kInt32).device(device));
 
-  auto out_ref = causal_conv1d_update_ref_v2(x_ref,
-                                             conv_state_ref,
-                                             weight_ref,
-                                             bias_ref,
-                                             true,
-                                             conv_state_indices.cpu(),
-                                             query_start_loc.cpu(),
-                                             1,
-                                             -1,
-                                             block_idx_last_scheduled_token.cpu(),
-                                             initial_state_idx.cpu());
+  auto out_ref =
+      causal_conv1d_update_ref_v2(x_ref,
+                                  conv_state_ref,
+                                  weight_ref,
+                                  bias_ref,
+                                  true,
+                                  conv_state_indices.cpu(),
+                                  query_start_loc.cpu(),
+                                  1,
+                                  -1,
+                                  block_idx_last_scheduled_token.cpu(),
+                                  initial_state_idx.cpu());
 
   auto out = npu_causal_conv1d_update_v2(x,
                                          conv_state,
@@ -407,9 +410,9 @@ void RunVarlenPadWidth5Case(const torch::TensorOptions& tensor_options,
   auto weight_ref = weight.cpu();
   auto bias = torch::zeros({dim}, tensor_options);
   auto bias_ref = bias.cpu();
-  auto conv_state_indices = torch::tensor(
-      {{0, 1}, {-7, -7}, {2, 3}},
-      torch::TensorOptions().dtype(torch::kInt32).device(device));
+  auto conv_state_indices =
+      torch::tensor({{0, 1}, {-7, -7}, {2, 3}},
+                    torch::TensorOptions().dtype(torch::kInt32).device(device));
   auto block_idx_last_scheduled_token = torch::tensor(
       {1, 0, 1}, torch::TensorOptions().dtype(torch::kInt32).device(device));
   auto initial_state_idx = torch::zeros(
@@ -417,17 +420,18 @@ void RunVarlenPadWidth5Case(const torch::TensorOptions& tensor_options,
   auto query_start_loc = torch::tensor(
       {0, 3, 3, 5}, torch::TensorOptions().dtype(torch::kInt32).device(device));
 
-  auto out_ref = causal_conv1d_update_ref_v2(x_ref,
-                                             conv_state_ref,
-                                             weight_ref,
-                                             bias_ref,
-                                             true,
-                                             conv_state_indices.cpu(),
-                                             query_start_loc.cpu(),
-                                             max_query_len,
-                                             -7,
-                                             block_idx_last_scheduled_token.cpu(),
-                                             initial_state_idx.cpu());
+  auto out_ref =
+      causal_conv1d_update_ref_v2(x_ref,
+                                  conv_state_ref,
+                                  weight_ref,
+                                  bias_ref,
+                                  true,
+                                  conv_state_indices.cpu(),
+                                  query_start_loc.cpu(),
+                                  max_query_len,
+                                  -7,
+                                  block_idx_last_scheduled_token.cpu(),
+                                  initial_state_idx.cpu());
 
   auto out = npu_causal_conv1d_update_v2(x,
                                          conv_state,

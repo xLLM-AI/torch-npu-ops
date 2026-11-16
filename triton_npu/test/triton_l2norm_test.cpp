@@ -17,7 +17,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 #include <torch/torch.h>
-#include <torch_npu/torch_npu.h>
+#include <torch_npu/csrc/core/npu/NPUStream.h>
 
 #include <tuple>
 #include <vector>
@@ -45,7 +45,6 @@ class TritonL2NormTest : public ::testing::TestWithParam<std::vector<int64_t>> {
   static void SetUpTestSuite() {
     try {
       torch::zeros({1}, torch::TensorOptions().device("npu:0"));
-      torch_npu::init_npu("npu:" + std::to_string(kDeviceId));
       auto& reg = KernelRegistry::get_instance();
       std::string binary_path =
           GetKernelBinaryPath("l2norm_fwd_kernel2_loop.npubin");
@@ -63,7 +62,6 @@ class TritonL2NormTest : public ::testing::TestWithParam<std::vector<int64_t>> {
     }
     try {
       KernelRegistry::get_instance().cleanup();
-      torch_npu::finalize_npu();
     } catch (...) {
     }
   }
@@ -114,9 +112,8 @@ TEST_P(TritonL2NormTest, DynamicLastDimAgainstCpuReference) {
   auto diff = torch::abs(out_cpu.to(torch::kFloat32) - ref.to(torch::kFloat32));
   float max_diff = torch::max(diff).item<float>();
 
-  EXPECT_LT(max_diff, kTolerance)
-      << "l2norm output max diff (" << max_diff << ") > tolerance ("
-      << kTolerance << ")";
+  EXPECT_LT(max_diff, kTolerance) << "l2norm output max diff (" << max_diff
+                                  << ") > tolerance (" << kTolerance << ")";
 }
 
 INSTANTIATE_TEST_SUITE_P(
